@@ -1,5 +1,5 @@
 Universal Agent Tools
-A lightweight, highly robust Model Context Protocol (MCP) server providing universal IDE capabilities for local AI agents (e.g., LM Studio, Atomic Chat, Claude).
+A lightweight, highly robust Model Context Protocol (MCP) server providing universal IDE capabilities for local AI agents (e.g., LM Studio).
 ## 🚀 Features
 - **Bulletproof Shell Execution (`Shell`)**: Includes a massive 10MB memory buffer so agents can run heavy compilation or installation commands without crashing.
 - **Surgical Text Replacement (`StrReplace`)**: Bulletproof string replacement that automatically normalizes Windows (`\r\n`) and Linux (`\n`) line endings to prevent AI editing failures.
