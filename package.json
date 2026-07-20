@@ -1,0 +1,10 @@
+{
+  "name": "universal-agent-tools",
+  "version": "1.0.0",
+  "description": "MCP server providing universal IDE tools (Shell/Read/Write/StrReplace/Delete/WebSearch)",
+  "type": "module",
+  "main": "dist/index.js",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}
