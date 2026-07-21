@@ -1,8 +1,12 @@
 # Universal Agent Tools
 
-Lightweight Model Context Protocol (MCP) server giving local AI agents IDE-style tools (Atomic Chat, LM Studio, Cursor, etc.).
+Lightweight Model Context Protocol (MCP) server giving local AI agents IDE-style tools.
 
 **Version: 1.2.0**
+
+## Testing status
+
+Tested in **LM Studio**.
 
 ## Features
 
