@@ -1,11 +1,42 @@
-Universal Agent Tools
-A lightweight, highly robust Model Context Protocol (MCP) server providing universal IDE capabilities for local AI agents (e.g., LM Studio).
-## 🚀 Features
-- **Bulletproof Shell Execution (`Shell`)**: Includes a massive 10MB memory buffer so agents can run heavy compilation or installation commands without crashing.
-- **Surgical Text Replacement (`StrReplace`)**: Bulletproof string replacement that automatically normalizes Windows (`\r\n`) and Linux (`\n`) line endings to prevent AI editing failures.
-- **Safe File Operations (`Read`, `Write`, `Delete`)**: Automatically creates missing parent directories safely when writing files. 
-- **Universal Compatibility**: Works effortlessly across Windows and Linux environments.
-## 🛠️ Installation & Setup
-1. Clone this repository.
-2. Run `npm install` to download the required dependencies.
-3. Hook it into your AI frontend by pointing your MCP configuration to the compiled `dist/index.js` file.
+# Universal Agent Tools
+
+Lightweight Model Context Protocol (MCP) server giving local AI agents IDE-style tools (Atomic Chat, LM Studio, Cursor, etc.).
+
+**Version: 1.2.0**
+
+## Features
+
+- **Shell / AwaitShell** — 10MB output buffer; Windows-first command guidance
+- **Read / Write / StrReplace / Delete** — Write creates parent dirs; StrReplace normalizes CRLF/LF for matching then restores original endings; Delete moves files to a sibling `.trash` folder (not permanent wipe)
+- **ListDir / Glob / Grep** — Discovery tools agents actually need
+- **TodoWrite** — Lightweight todo list echo
+- **WebFetch** — Fetch URL text (2MB cap); **WebSearch** is a stub pointing you to WebFetch
+
+## Tools (12)
+
+`Shell`, `AwaitShell`, `Read`, `Write`, `StrReplace`, `Delete`, `ListDir`, `Glob`, `Grep`, `TodoWrite`, `WebSearch`, `WebFetch`
+
+## Setup
+
+```bash
+git clone https://github.com/valentinlutun-cmd/universal-agent-tools.git
+cd universal-agent-tools
+npm install
+npm exec -- tsc -p tsconfig.json   # optional if dist/ is already present
+```
+
+Point your MCP client at the compiled entry:
+
+```json
+"universal-agent-tools": {
+  "command": "node",
+  "args": ["D:/path/to/universal-agent-tools/dist/index.js"]
+}
+```
+
+On Windows you can use the full path to `node.exe` if needed.
+
+## Notes
+
+- Prefer `dist/index.js` as the MCP entry (not the root `index.js` leftover).
+- See `TOOLS.md` for the short agent-facing list.

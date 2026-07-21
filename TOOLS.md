@@ -1,20 +1,18 @@
-# universal-agent-tools MCP v1.1.0
+# universal-agent-tools MCP v1.2.0
 
 Cursor-named agent tools for Atomic Chat / LM Studio / Cursor.
 
-**Path:** `D:\PROJECTS\DATA\mcp\universal-agent-tools\`  
-**Run:** `node dist\index.js` (stdio MCP)  
-**Atomic / LM Studio entry:** `dist\index.js` (not root `index.js`)
+**Run:** `node dist/index.js` (stdio MCP)
 
-## What changed in 1.1.0
+## What changed in 1.2.0
 
-- Copy/paste MCP that **provides universal IDE tools** (`Shell`, `Read`, `Write`, `StrReplace`, `Delete`, …)
-- `Shell`: `maxBuffer` 10MB so heavy commands don’t crash the MCP
-- `StrReplace`: CRLF/LF normalize + optional `replaceAll`
-- `Write`: creates parent dirs; errors returned as text (no server crash)
-- Server announces `universal-agent-tools` **1.1.0**
+- Added **ListDir / Glob / Grep / TodoWrite / WebFetch / AwaitShell**
+- **Delete** moves into sibling `.trash` (no recursive force wipe)
+- **StrReplace** restores original CRLF/LF after match
+- Arg aliases: `path`/`filePath`, `contents`/`content`, `old_string`/`targetText`
+- **Shell** description is Windows-first (dir/findstr; avoid bash-only commands)
 
-## Tools
+## Tools (12 real)
 
 Shell  
 AwaitShell  
@@ -22,35 +20,11 @@ Read
 Write  
 StrReplace  
 Delete  
+ListDir  
 Glob  
 Grep  
-EditNotebook  
-ReadLints  
+TodoWrite  
 WebSearch  
 WebFetch  
-GenerateImage  
-Task  
-TodoWrite  
-AskQuestion  
-SwitchMode  
-GetMcpTools  
-CallMcpTool  
-FetchMcpResource  
 
-Stubs (IDE-only): `GenerateImage`, `Task`, `AskQuestion`, `SwitchMode`, `ReadLints`, `FetchMcpResource`
-
-## Wire into Zed (`%APPDATA%\Zed\settings.json`)
-
-```json
-"context_servers": {
-  "universal-agent-tools": {
-    "source": "custom",
-    "command": "C:\\Program Files\\nodejs\\node.exe",
-    "args": [
-      "D:/PROJECTS/DATA/mcp/universal-agent-tools/dist/index.js"
-    ]
-  }
-}
-```
-
-Uses `node_modules` copied from `zed-mcp-agent` (no build).
+WebSearch is a stub. WebFetch is implemented.

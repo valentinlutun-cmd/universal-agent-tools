@@ -1,59 +1,143 @@
-"use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError, } from "@modelcontextprotocol/sdk/types.js";
+import { exec } from "child_process";
+import { promisify } from "util";
+import * as fs from "fs/promises";
+import * as fsSync from "fs";
+import * as path from "path";
+import * as http from "http";
+import * as https from "https";
+const execAsync = promisify(exec);
+const MAX_SHELL_BUFFER = 1024 * 1024 * 10;
+const MAX_FETCH_BYTES = 1024 * 1024 * 2;
+function ok(text) {
+    return { content: [{ type: "text", text }] };
+}
+function fail(text) {
+    return { content: [{ type: "text", text }], isError: true };
+}
+function detectEol(sample) {
+    return sample.includes("\r\n") ? "\r\n" : "\n";
+}
+function toLf(s) {
+    return s.replace(/\r\n/g, "\n");
+}
+function fromLf(s, eol) {
+    return eol === "\r\n" ? s.replace(/\n/g, "\r\n") : s;
+}
+async function walkFiles(root, max = 500) {
+    const out = [];
+    async function walk(dir) {
+        if (out.length >= max)
+            return;
+        let entries;
+        try {
+            entries = await fs.readdir(dir, { withFileTypes: true });
+        }
+        catch {
+            return;
+        }
+        for (const ent of entries) {
+            if (out.length >= max)
+                return;
+            const full = path.join(dir, ent.name);
+            if (ent.isDirectory()) {
+                if (ent.name === "node_modules" || ent.name === ".git" || ent.name === ".trash")
+                    continue;
+                await walk(full);
+            }
+            else if (ent.isFile()) {
+                out.push(full);
+            }
+        }
     }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-const index_js_1 = require("@modelcontextprotocol/sdk/server/index.js");
-const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
-const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
-const child_process_1 = require("child_process");
-const util_1 = require("util");
-const fs = __importStar(require("fs/promises"));
-const path = __importStar(require("path"));
-const execAsync = (0, util_1.promisify)(child_process_1.exec);
-class AgenticServer {
+    const st = await fs.stat(root);
+    if (st.isFile())
+        return [root];
+    await walk(root);
+    return out;
+}
+function globToRegExp(pattern) {
+    const normalized = pattern.replace(/\\/g, "/");
+    let re = "";
+    for (let i = 0; i < normalized.length; i++) {
+        const c = normalized[i];
+        if (c === "*" && normalized[i + 1] === "*") {
+            re += ".*";
+            i++;
+            if (normalized[i + 1] === "/")
+                i++;
+        }
+        else if (c === "*") {
+            re += "[^/]*";
+        }
+        else if (c === "?") {
+            re += "[^/]";
+        }
+        else if (".+^$()[]{}|".includes(c)) {
+            re += "\\" + c;
+        }
+        else {
+            re += c;
+        }
+    }
+    return new RegExp("^" + re + "$", "i");
+}
+async function trashPath(filePath) {
+    const abs = path.resolve(filePath);
+    const trashDir = path.join(path.dirname(abs), ".trash");
+    await fs.mkdir(trashDir, { recursive: true });
+    let dest = path.join(trashDir, path.basename(abs));
+    if (fsSync.existsSync(dest)) {
+        const stamp = Date.now();
+        dest = path.join(trashDir, `${path.parse(abs).name}_${stamp}${path.parse(abs).ext}`);
+    }
+    await fs.rename(abs, dest);
+    return dest;
+}
+function fetchText(url) {
+    return new Promise((resolve, reject) => {
+        const lib = url.startsWith("https:") ? https : http;
+        const req = lib.get(url, { timeout: 20000 }, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                fetchText(res.headers.location).then(resolve, reject);
+                res.resume();
+                return;
+            }
+            if ((res.statusCode ?? 500) >= 400) {
+                reject(new Error(`HTTP ${res.statusCode}`));
+                res.resume();
+                return;
+            }
+            const chunks = [];
+            let total = 0;
+            res.on("data", (chunk) => {
+                total += chunk.length;
+                if (total > MAX_FETCH_BYTES) {
+                    req.destroy();
+                    reject(new Error("response too large"));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            res.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+        });
+        req.on("error", reject);
+    });
+}
+class UniversalAgenticServer {
     server;
     constructor() {
-        this.server = new index_js_1.Server({
-            name: "zed-agentic-tools",
-            version: "1.0.0",
+        this.server = new Server({
+            name: "universal-agent-tools",
+            version: "1.2.0",
         }, {
             capabilities: {
                 tools: {},
             },
         });
         this.setupToolHandlers();
-        // Error handling
         this.server.onerror = (error) => console.error("[MCP Error]", error);
         process.on("SIGINT", async () => {
             await this.server.close();
@@ -61,121 +145,337 @@ class AgenticServer {
         });
     }
     setupToolHandlers() {
-        this.server.setRequestHandler(types_js_1.ListToolsRequestSchema, async () => ({
+        this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
             tools: [
                 {
-                    name: "run_terminal_command",
-                    description: "Execute a shell command. Always use this to interact with the environment.",
+                    name: "Shell",
+                    description: "Execute a shell command. On Windows use cmd/PowerShell (dir, findstr, mkdir, powershell -Command). Avoid bash-only: head, grep, mkdir -p, ls, cat, rm. 10MB output buffer.",
                     inputSchema: {
                         type: "object",
                         properties: {
-                            command: {
-                                type: "string",
-                                description: "The terminal command to execute",
-                            },
-                            cwd: {
-                                type: "string",
-                                description: "The working directory (optional)",
-                            },
+                            command: { type: "string", description: "The terminal command to execute" },
+                            cwd: { type: "string", description: "Working directory (optional)" },
                         },
                         required: ["command"],
                     },
                 },
                 {
-                    name: "read_file",
-                    description: "Read the contents of a file",
+                    name: "AwaitShell",
+                    description: "Alias of Shell — wait for command completion.",
                     inputSchema: {
                         type: "object",
                         properties: {
-                            filePath: { type: "string" },
+                            command: { type: "string" },
+                            cwd: { type: "string" },
                         },
-                        required: ["filePath"],
+                        required: ["command"],
                     },
                 },
                 {
-                    name: "write_file",
-                    description: "Write content to a file",
+                    name: "Read",
+                    description: "Read the contents of a text file",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            filePath: { type: "string", description: "Absolute or relative path to the file" },
+                            path: { type: "string", description: "Alias of filePath" },
+                        },
+                    },
+                },
+                {
+                    name: "Write",
+                    description: "Write content to a file, creating parent directories if needed",
                     inputSchema: {
                         type: "object",
                         properties: {
                             filePath: { type: "string" },
+                            path: { type: "string" },
                             content: { type: "string" },
+                            contents: { type: "string" },
                         },
-                        required: ["filePath", "content"],
                     },
                 },
                 {
-                    name: "replace_file_content",
-                    description: "Replace a specific block of text in a file. Very precise.",
+                    name: "StrReplace",
+                    description: "Surgical edit. Normalizes CRLF/LF for matching, then restores the file's original line endings.",
                     inputSchema: {
                         type: "object",
                         properties: {
                             filePath: { type: "string" },
-                            targetText: { type: "string", description: "The exact text to replace" },
-                            replacementText: { type: "string", description: "The new text" },
+                            path: { type: "string" },
+                            targetText: { type: "string" },
+                            old_string: { type: "string" },
+                            replacementText: { type: "string" },
+                            new_string: { type: "string" },
+                            replaceAll: { type: "boolean" },
                         },
-                        required: ["filePath", "targetText", "replacementText"],
+                    },
+                },
+                {
+                    name: "Delete",
+                    description: "Move a file into a sibling .trash folder (not permanent delete). Refuses to wipe directories recursively.",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            filePath: { type: "string" },
+                            path: { type: "string" },
+                        },
+                    },
+                },
+                {
+                    name: "ListDir",
+                    description: "List names in a directory",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            path: { type: "string" },
+                            filePath: { type: "string" },
+                        },
+                    },
+                },
+                {
+                    name: "Glob",
+                    description: "Find files under a root matching a glob (* and ** supported)",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            pattern: { type: "string" },
+                            path: { type: "string", description: "Root directory (default: cwd)" },
+                        },
+                        required: ["pattern"],
+                    },
+                },
+                {
+                    name: "Grep",
+                    description: "Search text file contents for a regex",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            pattern: { type: "string" },
+                            path: { type: "string" },
+                        },
+                        required: ["pattern"],
+                    },
+                },
+                {
+                    name: "TodoWrite",
+                    description: "Record a short todo list (returned back; no disk required)",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            todos: { type: "array", items: { type: "string" } },
+                        },
+                        required: ["todos"],
+                    },
+                },
+                {
+                    name: "WebSearch",
+                    description: "Search stub — returns guidance to use WebFetch with a concrete URL",
+                    inputSchema: {
+                        type: "object",
+                        properties: { query: { type: "string" } },
+                        required: ["query"],
+                    },
+                },
+                {
+                    name: "WebFetch",
+                    description: "Fetch a URL as text (2MB cap)",
+                    inputSchema: {
+                        type: "object",
+                        properties: { url: { type: "string" } },
+                        required: ["url"],
                     },
                 },
             ],
         }));
-        this.server.setRequestHandler(types_js_1.CallToolRequestSchema, async (request) => {
+        this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
             try {
+                const args = (request.params.arguments ?? {});
                 switch (request.params.name) {
-                    case "run_terminal_command": {
-                        const { command, cwd } = request.params.arguments;
+                    case "Shell":
+                    case "AwaitShell": {
+                        const command = String(args.command ?? "");
+                        const cwd = args.cwd ? String(args.cwd) : undefined;
                         try {
-                            const { stdout, stderr } = await execAsync(command, { cwd });
-                            return {
-                                content: [{ type: "text", text: `STDOUT:\n${stdout}\nSTDERR:\n${stderr}` }],
-                            };
+                            const { stdout, stderr } = await execAsync(command, {
+                                cwd,
+                                maxBuffer: MAX_SHELL_BUFFER,
+                                windowsHide: true,
+                            });
+                            return ok(`STDOUT:\n${stdout}\nSTDERR:\n${stderr}`);
                         }
                         catch (error) {
-                            return {
-                                content: [{ type: "text", text: `Command failed: ${error.message}\nSTDOUT:\n${error.stdout}\nSTDERR:\n${error.stderr}` }],
-                                isError: true,
-                            };
+                            return fail(`Command failed: ${error.message}\nSTDOUT:\n${error.stdout ?? ""}\nSTDERR:\n${error.stderr ?? ""}`);
                         }
                     }
-                    case "read_file": {
-                        const { filePath } = request.params.arguments;
-                        const content = await fs.readFile(filePath, "utf-8");
-                        return { content: [{ type: "text", text: content }] };
-                    }
-                    case "write_file": {
-                        const { filePath, content } = request.params.arguments;
-                        await fs.mkdir(path.dirname(filePath), { recursive: true });
-                        await fs.writeFile(filePath, content, "utf-8");
-                        return { content: [{ type: "text", text: `Successfully wrote to ${filePath}` }] };
-                    }
-                    case "replace_file_content": {
-                        const { filePath, targetText, replacementText } = request.params.arguments;
-                        const content = await fs.readFile(filePath, "utf-8");
-                        if (!content.includes(targetText)) {
-                            throw new types_js_1.McpError(types_js_1.ErrorCode.InvalidParams, "Target text not found in file");
+                    case "Read": {
+                        const filePath = String(args.filePath ?? args.path ?? "");
+                        if (!filePath)
+                            return fail("filePath required");
+                        try {
+                            const content = await fs.readFile(filePath, "utf-8");
+                            return ok(content);
                         }
-                        const newContent = content.replace(targetText, replacementText);
-                        await fs.writeFile(filePath, newContent, "utf-8");
-                        return { content: [{ type: "text", text: `Successfully replaced content in ${filePath}` }] };
+                        catch (err) {
+                            return fail(`Failed to read file: ${err.message}`);
+                        }
+                    }
+                    case "Write": {
+                        const filePath = String(args.filePath ?? args.path ?? "");
+                        const content = String(args.content ?? args.contents ?? "");
+                        if (!filePath)
+                            return fail("filePath required");
+                        try {
+                            await fs.mkdir(path.dirname(filePath), { recursive: true });
+                            await fs.writeFile(filePath, content, "utf-8");
+                            return ok(`Successfully wrote to ${filePath}`);
+                        }
+                        catch (err) {
+                            return fail(`Failed to write file: ${err.message}`);
+                        }
+                    }
+                    case "StrReplace": {
+                        const filePath = String(args.filePath ?? args.path ?? "");
+                        const targetText = String(args.targetText ?? args.old_string ?? "");
+                        const replacementText = String(args.replacementText ?? args.new_string ?? "");
+                        const replaceAll = Boolean(args.replaceAll);
+                        if (!filePath || !targetText)
+                            return fail("filePath and targetText required");
+                        try {
+                            const content = await fs.readFile(filePath, "utf-8");
+                            const eol = detectEol(content);
+                            const normalizedContent = toLf(content);
+                            const normalizedTarget = toLf(targetText);
+                            const normalizedReplacement = toLf(replacementText);
+                            if (!normalizedContent.includes(normalizedTarget)) {
+                                return fail("Target text not found in file. Ensure exact match including whitespace.");
+                            }
+                            let newLf;
+                            if (replaceAll) {
+                                newLf = normalizedContent.split(normalizedTarget).join(normalizedReplacement);
+                            }
+                            else {
+                                newLf = normalizedContent.replace(normalizedTarget, normalizedReplacement);
+                            }
+                            await fs.writeFile(filePath, fromLf(newLf, eol), "utf-8");
+                            return ok(`Successfully replaced content in ${filePath}`);
+                        }
+                        catch (err) {
+                            return fail(`Failed to replace content: ${err.message}`);
+                        }
+                    }
+                    case "Delete": {
+                        const filePath = String(args.filePath ?? args.path ?? "");
+                        if (!filePath)
+                            return fail("filePath required");
+                        try {
+                            const st = await fs.stat(filePath);
+                            if (st.isDirectory()) {
+                                return fail("Delete refuses directories — move files individually into .trash");
+                            }
+                            const dest = await trashPath(filePath);
+                            return ok(`Moved to trash: ${dest}`);
+                        }
+                        catch (err) {
+                            return fail(`Failed to trash file: ${err.message}`);
+                        }
+                    }
+                    case "ListDir": {
+                        const dir = String(args.path ?? args.filePath ?? process.cwd());
+                        try {
+                            const names = await fs.readdir(dir);
+                            return ok(names.sort().join("\n") || "(empty)");
+                        }
+                        catch (err) {
+                            return fail(`Failed to list dir: ${err.message}`);
+                        }
+                    }
+                    case "Glob": {
+                        const pattern = String(args.pattern ?? "");
+                        const root = String(args.path ?? process.cwd());
+                        try {
+                            const rx = globToRegExp(pattern.includes("/") || pattern.includes("\\") ? pattern : `**/${pattern}`);
+                            const files = await walkFiles(root);
+                            const hits = files
+                                .map((f) => f.replace(/\\/g, "/"))
+                                .filter((f) => rx.test(f) || rx.test(path.basename(f).replace(/\\/g, "/")))
+                                .slice(0, 200);
+                            return ok(hits.join("\n") || "(no matches)");
+                        }
+                        catch (err) {
+                            return fail(`Glob failed: ${err.message}`);
+                        }
+                    }
+                    case "Grep": {
+                        const pattern = String(args.pattern ?? "");
+                        const root = String(args.path ?? process.cwd());
+                        try {
+                            const rx = new RegExp(pattern, "i");
+                            const files = await walkFiles(root, 300);
+                            const out = [];
+                            const textExt = new Set([
+                                ".txt", ".md", ".py", ".json", ".html", ".js", ".ts", ".css", ".bat", ".ps1", ".xml", ".yml", ".yaml",
+                            ]);
+                            for (const f of files) {
+                                if (out.length >= 80)
+                                    break;
+                                if (!textExt.has(path.extname(f).toLowerCase()))
+                                    continue;
+                                let text;
+                                try {
+                                    text = await fs.readFile(f, "utf-8");
+                                }
+                                catch {
+                                    continue;
+                                }
+                                const lines = text.split(/\r?\n/);
+                                for (let i = 0; i < lines.length; i++) {
+                                    if (rx.test(lines[i])) {
+                                        out.push(`${f}:${i + 1}:${lines[i].slice(0, 160)}`);
+                                        if (out.length >= 80)
+                                            break;
+                                    }
+                                }
+                            }
+                            return ok(out.join("\n") || "(no matches)");
+                        }
+                        catch (err) {
+                            return fail(`Grep failed: ${err.message}`);
+                        }
+                    }
+                    case "TodoWrite": {
+                        const todos = Array.isArray(args.todos) ? args.todos.map(String) : [];
+                        return ok(`ok: ${todos.length} todos\n` + todos.map((t, i) => `${i + 1}. ${t}`).join("\n"));
+                    }
+                    case "WebSearch": {
+                        return ok(`WebSearch stub. Query=${String(args.query ?? "")}. Use WebFetch with a concrete URL instead.`);
+                    }
+                    case "WebFetch": {
+                        const url = String(args.url ?? "");
+                        if (!/^https?:\/\//i.test(url))
+                            return fail("url must start with http:// or https://");
+                        try {
+                            const body = await fetchText(url);
+                            return ok(body.slice(0, MAX_FETCH_BYTES));
+                        }
+                        catch (err) {
+                            return fail(`WebFetch failed: ${err.message}`);
+                        }
                     }
                     default:
-                        throw new types_js_1.McpError(types_js_1.ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
+                        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
                 }
             }
             catch (error) {
-                return {
-                    content: [{ type: "text", text: `Tool error: ${error.message}` }],
-                    isError: true,
-                };
+                return fail(`Tool error: ${error.message}`);
             }
         });
     }
     async run() {
-        const transport = new stdio_js_1.StdioServerTransport();
+        const transport = new StdioServerTransport();
         await this.server.connect(transport);
-        console.error("Zed Agentic MCP Server running on stdio");
+        console.error("Universal Agentic MCP Server v1.2.0 running on stdio");
     }
 }
-const server = new AgenticServer();
+const server = new UniversalAgenticServer();
 server.run().catch(console.error);
-//# sourceMappingURL=index.js.map
