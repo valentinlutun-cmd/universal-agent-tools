@@ -6,7 +6,7 @@ Lightweight Model Context Protocol (MCP) server giving local AI agents IDE-style
 
 ## Testing status
 
-Tested in **LM Studio**.
+I tested this myself in **LM Studio** and **Zed**.
 
 ## Features
 
